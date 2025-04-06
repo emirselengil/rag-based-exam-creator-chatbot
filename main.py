@@ -16,7 +16,7 @@ import streamlit as st
 import os
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
 import utils
@@ -71,6 +71,9 @@ DEFAULT_QUESTIONS = 5
 HISTORY_LIMIT = 15
 DEFAULT_TOPIC_NAME = "Belgenin Geneli"
 TOPIC_ONLY_DISPLAY_NAME = "Konu Bazlı"
+
+# Define the target timezone (UTC+3)
+TURKEY_TZ = timezone(timedelta(hours=3))
 
 # --- Environment & Initialization ---
 
@@ -502,37 +505,41 @@ def display_history():
             exam_id = entry['id']
             timestamp_str = entry.get('timestamp', 'Bilinmeyen Tarih')
             try:
-                # Handle potential timezone info if present (e.g., +00:00)
-                timestamp_dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-                # Format to local time might be better, but requires timezone awareness
-                # For simplicity, stick to UTC or the stored format
-                display_time = timestamp_dt.strftime("%Y-%m-%d %H:%M") # Consider adding timezone info if relevant
+                # Parse the ISO string, assuming it's UTC (often indicated by Z or +00:00 implicitly in DB)
+                timestamp_utc = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+                # Ensure it's timezone-aware (set to UTC if naive)
+                if timestamp_utc.tzinfo is None:
+                    timestamp_utc = timestamp_utc.replace(tzinfo=timezone.utc)
+                # Convert to Turkey Time (UTC+3)
+                timestamp_tr = timestamp_utc.astimezone(TURKEY_TZ)
+                # Format the TR time
+                display_time = timestamp_tr.strftime("%Y-%m-%d %H:%M")
             except ValueError:
                  # Fallback for potentially non-ISO formats
-                display_time = timestamp_str.split('.')[0].replace('T', ' ')
+                 # Try basic parsing, assuming it might be local time already (less reliable)
+                 try:
+                     naive_dt = datetime.strptime(timestamp_str.split('.')[0], '%Y-%m-%d %H:%M:%S')
+                     display_time = naive_dt.strftime("%Y-%m-%d %H:%M") + " (Format Hatalı?)"
+                 except ValueError:
+                      display_time = timestamp_str.split('.')[0].replace('T', ' ') + " (Format Bilinmiyor)"
 
             topic = entry.get('topic', 'Bilinmeyen Konu')
             num_q = entry.get('num_questions', '?')
             pdf_display = entry.get('pdf_name')
 
-            # Use columns for better layout within the expander
             expander_title = f"{display_time} - {topic} ({num_q} soru)"
             with st.sidebar.expander(expander_title):
-                # Display source info
                 if pdf_display:
                     st.caption(f"Kaynak: {pdf_display}")
                 else:
                     st.caption(f"Kaynak: {TOPIC_ONLY_DISPLAY_NAME}")
 
-                # Action buttons
                 col1_actions, col2_actions = st.columns(2)
                 with col1_actions:
                     if st.button(VIEW_BUTTON_LABEL, key=f"view_{exam_id}", use_container_width=True):
                         full_exam_data = utils.get_exam_by_id(exam_id)
                         if full_exam_data:
-                            # Store the full data to be displayed after rerun
                             st.session_state[S_EXAM_TO_DISPLAY] = full_exam_data
-                            # Clear any newly generated results to avoid conflict
                             st.session_state[S_EXAM_RESULTS] = None
                             st.rerun()
                         else:
@@ -543,12 +550,8 @@ def display_history():
                         deleted = utils.delete_exam(exam_id)
                         if deleted:
                             st.success(f"Sınav ID {exam_id} silindi.")
-                            # Clear display if the deleted exam was showing
                             if st.session_state.get(S_EXAM_TO_DISPLAY) and st.session_state[S_EXAM_TO_DISPLAY].get('id') == exam_id:
                                 st.session_state[S_EXAM_TO_DISPLAY] = None
-                            # Clear current results if they happened to be from the deleted one (less likely but possible)
-                            # This requires storing the ID of the last generated exam if we want perfect cleanup
-                            # For now, just rerun to refresh the history view
                             st.rerun()
                         else:
                             st.error(f"Sınav ID {exam_id} silinirken hata.")
