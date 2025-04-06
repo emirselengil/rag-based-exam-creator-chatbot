@@ -11,6 +11,9 @@ chromadb~=0.5.0
 # Add pysqlite3-binary to provide a compatible SQLite version for Chroma
 pysqlite3-binary
 
+# Add pysqlite3-binary to provide a compatible SQLite version for Chroma
+pysqlite3-binary
+
 # PDF Parsing
 pypdf~=4.2.0
 
