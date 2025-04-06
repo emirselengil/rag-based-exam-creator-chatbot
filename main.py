@@ -1,3 +1,17 @@
+# --- Patch for ChromaDB/SQLite on Streamlit Cloud ---
+# This must be at the VERY top before any imports that might load sqlite3
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    # Optional: Add a check or log
+    # import sqlite3
+    # print(f"Using SQLite version: {sqlite3.sqlite_version}")
+except ImportError:
+    # Optional: Log if pysqlite3 is not found
+    pass
+# --- End Patch ---
+
 import streamlit as st
 import os
 import json
