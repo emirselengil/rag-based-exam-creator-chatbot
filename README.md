@@ -19,10 +19,6 @@ If the user specifies only a topic without uploading a PDF, the RAG steps are sk
 
 https://rag-based-exam-creator-chatbot.streamlit.app
 
-## Screenshot / Video
-
-![image](https://github.com/EmirSelengil/RAG-based-Exam-Creator-Chatbot/assets/79674066/bd2243b5-30a4-4018-b469-4a0d54103108)
-
 ## Features and Use Cases
 
 *   **Exam Generation from PDF:** Create multiple-choice exams from your own lecture notes, articles, or any PDF document.
