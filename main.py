@@ -230,7 +230,7 @@ def process_uploaded_pdf(uploaded_file):
             st.session_state[S_UPLOADED_FILENAME] = uploaded_file.name # Keep track of original filename
             # Mark vector store as NOT ready for this new ID yet
             st.session_state[S_VECTORSTORE_READY_FOR_ID] = None
-            st.sidebar.success(f"'{uploaded_file.name}' başarıyla işlendi! ({len(doc_chunks)} parça). ID: {new_store_id[:8]}...")
+            st.sidebar.success(f"'{uploaded_file.name}' başarıyla işlendi! ({len(doc_chunks)} parça).")
             return True
         else:
             st.sidebar.error("PDF işlenirken bir hata oluştu veya içerik bulunamadı.")
@@ -261,7 +261,6 @@ def create_vector_store_if_needed():
             st.session_state[S_VECTORSTORE_READY_FOR_ID] = store_id
             # Clear chunks as they are now in the vector store
             st.session_state[S_DOC_CHUNKS] = None
-            st.sidebar.success(f"'{filename}' için vektör deposu (ID: {store_id[:8]}...) hazır.")
         except (ValueError, RuntimeError) as ve:
             st.sidebar.error(f"Vektör deposu oluşturma hatası ({filename}, ID: {store_id[:8]}...): {ve}")
             # Keep S_VECTORSTORE_READY_FOR_ID as None or its previous value
