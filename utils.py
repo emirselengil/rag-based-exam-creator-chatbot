@@ -14,7 +14,7 @@ from langchain.docstore.document import Document # Use this specific import path
 # --- Export Libraries ---
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle # Import ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.lib.units import inch
 from docx import Document as DocxDocument
@@ -230,16 +230,14 @@ def create_pdf_exam(exam_data_str: str, topic: str, pdf_name: Optional[str]) -> 
         styles = getSampleStyleSheet()
         story = []
 
-        # Define styles
-        title_style = styles['h1']
-        title_style.alignment = TA_CENTER
-        sub_title_style = styles['h3']
-        sub_title_style.alignment = TA_CENTER
-        question_style = styles['Normal']
-        option_style = styles['Normal']
-        option_style.leftIndent = 0.5*inch
-        answer_style = styles['Normal']
-        answer_style.alignment = TA_LEFT
+        # Define styles with Helvetica font for potential better Unicode support
+        # Create copies of default styles and change the font
+        title_style = ParagraphStyle(name='PdfTitle', parent=styles['h1'], alignment=TA_CENTER, fontName='Helvetica-Bold')
+        sub_title_style = ParagraphStyle(name='PdfSubTitle', parent=styles['h3'], alignment=TA_CENTER, fontName='Helvetica')
+        question_style = ParagraphStyle(name='PdfQuestion', parent=styles['Normal'], fontName='Helvetica')
+        option_style = ParagraphStyle(name='PdfOption', parent=styles['Normal'], leftIndent=0.5*inch, fontName='Helvetica')
+        answer_style = ParagraphStyle(name='PdfAnswer', parent=styles['Normal'], alignment=TA_LEFT, fontName='Helvetica')
+        answer_key_title_style = ParagraphStyle(name='PdfAnswerKeyTitle', parent=styles['h1'], alignment=TA_CENTER, fontName='Helvetica-Bold')
 
         # Build PDF content
         story.append(Paragraph(f"{topic} Sınavı", title_style))
@@ -254,12 +252,13 @@ def create_pdf_exam(exam_data_str: str, topic: str, pdf_name: Optional[str]) -> 
         questions = exam_data.get("sorular", [])
         for i, q in enumerate(questions):
             q_num = q.get('soru_no', i + 1)
+            # Ensure text is treated as UTF-8 by ReportLab
             q_text = q.get('soru_metni', 'Soru metni bulunamadı').replace('\n', '<br/>')
             story.append(Paragraph(f"<b>{q_num}.</b> {q_text}", question_style))
             story.append(Spacer(1, 0.1*inch))
 
             options = q.get("secenekler", {})
-            for key, value in sorted(options.items()): # Sort options for consistency
+            for key, value in sorted(options.items()):
                 option_text = value.replace('\n', '<br/>')
                 story.append(Paragraph(f"<b>{key})</b> {option_text}", option_style))
             story.append(Spacer(1, 0.2*inch))
@@ -271,7 +270,7 @@ def create_pdf_exam(exam_data_str: str, topic: str, pdf_name: Optional[str]) -> 
         # Add Answer Key
         answers = exam_data.get("cevap_anahtari", {})
         if answers:
-             story.append(Paragraph("Cevap Anahtarı", title_style))
+             story.append(Paragraph("Cevap Anahtarı", answer_key_title_style))
              story.append(Spacer(1, 0.2*inch))
 
              answer_lines = [f"<b>{num}:</b> {ans}" for num, ans in sorted(answers.items())]

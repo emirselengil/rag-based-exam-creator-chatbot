@@ -33,6 +33,8 @@ S_EXAM_RESULTS = 'exam_results' # Stores raw response from LLM
 S_EXAM_TO_DISPLAY = 'exam_to_display' # Stores full data of a selected historical exam
 S_LAST_GENERATED_TOPIC = 'last_generated_topic'
 S_LAST_SOURCE_PDF = 'last_source_pdf'
+S_CURRENT_STORE_ID = 'current_store_id'
+S_VECTORSTORE_READY_FOR_ID = 'vectorstore_ready_for_id'
 
 # UI Texts & Placeholders
 PAGE_TITLE = "Sınav Hazırlayan Chatbot"
@@ -105,6 +107,8 @@ def initialize_session_state():
         S_EXAM_TO_DISPLAY: None,
         S_LAST_GENERATED_TOPIC: None,
         S_LAST_SOURCE_PDF: None,
+        S_CURRENT_STORE_ID: None,
+        S_VECTORSTORE_READY_FOR_ID: None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -119,6 +123,8 @@ def reset_exam_state():
     st.session_state[S_DOC_CHUNKS] = None
     st.session_state[S_EXAM_RESULTS] = None
     st.session_state[S_UPLOADED_FILENAME] = None
+    st.session_state[S_CURRENT_STORE_ID] = None
+    # Keep S_VECTORSTORE_READY_FOR_ID to know the last successful one
 
 def parse_exam_json(json_str):
     """Parses the JSON string response from the LLM into a Python dict."""
@@ -207,70 +213,86 @@ def display_exam_interface(results_json_str, topic, source_pdf_name):
     # Error messages are handled within parse_exam_json and display_download_buttons
 
 def process_uploaded_pdf(uploaded_file):
-    """Saves, splits the uploaded PDF and updates session state."""
+    """Saves and splits the uploaded PDF. Returns True on success, False otherwise."""
     try:
         with st.spinner("PDF kaydediliyor ve parçalara ayrılıyor..."):
             save_path = utils.save_uploaded_file(uploaded_file)
+            if not save_path:
+                 st.sidebar.error(f"'{uploaded_file.name}' kaydedilemedi.")
+                 return False
             doc_chunks = utils.load_and_split_pdf(save_path)
 
         if doc_chunks:
+            # Store chunks temporarily, generate a NEW unique ID for this processing attempt
             st.session_state[S_DOC_CHUNKS] = doc_chunks
-            st.session_state[S_PDF_PROCESSED] = True
-            st.session_state[S_VECTORSTORE_CREATED] = False # Needs recreation
-            st.sidebar.success(f"'{uploaded_file.name}' başarıyla işlendi! ({len(doc_chunks)} parça)")
+            new_store_id = str(uuid.uuid4())
+            st.session_state[S_CURRENT_STORE_ID] = new_store_id
+            st.session_state[S_UPLOADED_FILENAME] = uploaded_file.name # Keep track of original filename
+            # Mark vector store as NOT ready for this new ID yet
+            st.session_state[S_VECTORSTORE_READY_FOR_ID] = None
+            st.sidebar.success(f"'{uploaded_file.name}' başarıyla işlendi! ({len(doc_chunks)} parça). ID: {new_store_id[:8]}...")
             return True
         else:
             st.sidebar.error("PDF işlenirken bir hata oluştu veya içerik bulunamadı.")
-            st.session_state[S_PDF_PROCESSED] = False
+            # Reset states if processing fails
+            st.session_state[S_DOC_CHUNKS] = None
+            st.session_state[S_CURRENT_STORE_ID] = None
             return False
     except Exception as e:
         st.sidebar.error(f"PDF işleme hatası: {e}")
-        st.session_state[S_PDF_PROCESSED] = False
+        st.session_state[S_DOC_CHUNKS] = None
+        st.session_state[S_CURRENT_STORE_ID] = None
         return False
 
 def create_vector_store_if_needed():
-    """Creates the vector store if PDF is processed and store doesn't exist."""
-    if st.session_state[S_PDF_PROCESSED] and not st.session_state[S_VECTORSTORE_CREATED]:
+    """Creates the vector store for the currently assigned S_CURRENT_STORE_ID if it's not ready yet."""
+    store_id = st.session_state.get(S_CURRENT_STORE_ID)
+    ready_id = st.session_state.get(S_VECTORSTORE_READY_FOR_ID)
+    chunks = st.session_state.get(S_DOC_CHUNKS)
+
+    # Proceed only if we have a current ID, it's not already marked as ready, and we have chunks
+    if store_id and store_id != ready_id and chunks:
+        filename = st.session_state.get(S_UPLOADED_FILENAME, store_id) # Use filename for messages
         try:
-            with st.spinner("Embeddingler oluşturuluyor ve vektör deposu hazırlanıyor..."):
-                # Pass force_recreate=True because we processed a new file (or re-processed)
-                rag_pipeline.create_vectorstore(st.session_state[S_DOC_CHUNKS], force_recreate=True)
-            st.session_state[S_VECTORSTORE_CREATED] = True
-        except ValueError as ve:
-            st.sidebar.error(f"Vektör deposu oluşturma hatası: {ve}. API Anahtarınızı kontrol edin.")
-            st.session_state[S_VECTORSTORE_CREATED] = False
+            with st.spinner(f"'{filename}' için vektör deposu (ID: {store_id[:8]}...) oluşturuluyor/güncelleniyor..."):
+                # force_recreate=True ensures deletion of old dir for this specific UUID store_id
+                rag_pipeline.create_vectorstore(chunks, store_id=store_id, force_recreate=True)
+            # If successful, mark this store ID as ready
+            st.session_state[S_VECTORSTORE_READY_FOR_ID] = store_id
+            # Clear chunks as they are now in the vector store
+            st.session_state[S_DOC_CHUNKS] = None
+            st.sidebar.success(f"'{filename}' için vektör deposu (ID: {store_id[:8]}...) hazır.")
+        except (ValueError, RuntimeError) as ve:
+            st.sidebar.error(f"Vektör deposu oluşturma hatası ({filename}, ID: {store_id[:8]}...): {ve}")
+            # Keep S_VECTORSTORE_READY_FOR_ID as None or its previous value
         except Exception as e:
-            st.sidebar.error(f"Vektör deposu oluşturma hatası: {e}")
-            st.session_state[S_VECTORSTORE_CREATED] = False
+            st.sidebar.error(f"Beklenmedik vektör deposu oluşturma hatası ({filename}, ID: {store_id[:8]}...): {e}")
 
 def handle_pdf_upload():
     """Manages the PDF upload section in the sidebar."""
     uploaded_pdf = st.sidebar.file_uploader(PDF_UPLOAD_LABEL, type=["pdf"], key="pdf_uploader")
 
     if uploaded_pdf:
-        # Check if it's a new file or reprocessing is needed
-        new_file_uploaded = st.session_state.get(S_UPLOADED_FILENAME) != uploaded_pdf.name
-        needs_reprocessing = not st.session_state.get(S_PDF_PROCESSED)
+        # Check if it's a different file than the last one successfully processed
+        # or if the vector store for the current ID isn't ready
+        current_store_id = st.session_state.get(S_CURRENT_STORE_ID)
+        ready_store_id = st.session_state.get(S_VECTORSTORE_READY_FOR_ID)
+        is_new_file = st.session_state.get(S_UPLOADED_FILENAME) != uploaded_pdf.name
+        needs_processing = is_new_file or (current_store_id != ready_store_id)
 
-        if new_file_uploaded:
-            st.sidebar.info(f"Yeni dosya algılandı: '{uploaded_pdf.name}'. İşleniyor...")
-            # Reset relevant states for the new file
-            reset_exam_state()
-            st.session_state[S_UPLOADED_FILENAME] = uploaded_pdf.name
-            process_uploaded_pdf(uploaded_pdf)
-            # Vector store creation will be triggered automatically after this if successful
-
-        elif needs_reprocessing:
-            st.sidebar.warning(f"'{uploaded_pdf.name}' daha önce yüklenmişti ancak işlenmemiş görünüyor. Tekrar işleniyor...")
-            # Ensure filename is set, process, and trigger vector store creation
-            st.session_state[S_UPLOADED_FILENAME] = uploaded_pdf.name
-            process_uploaded_pdf(uploaded_pdf)
-
+        if needs_processing:
+            st.sidebar.info(f"Dosya '{uploaded_pdf.name}' işleniyor...")
+            # Resetting here is crucial if it's a truly new file
+            # If it's a retry for the same file, process_uploaded_pdf will assign new ID
+            # reset_exam_state() # Maybe reset only specific parts?
+            st.session_state[S_EXAM_RESULTS] = None # Clear previous exam results
+            process_uploaded_pdf(uploaded_file=uploaded_pdf)
+            # Vector store creation will be attempted by display_sidebar calls
         else:
-            # File is the same and already processed
-            st.sidebar.success(f"'{uploaded_pdf.name}' zaten yüklü ve işlenmiş.")
-            # Ensure vector store is created if it was somehow lost
-            create_vector_store_if_needed()
+            # Same file, and vector store is marked as ready for its ID
+            filename = st.session_state.get(S_UPLOADED_FILENAME)
+            store_id_short = current_store_id[:8] if current_store_id else "N/A"
+            st.sidebar.success(f"'{filename}' zaten yüklü ve vektör deposu (ID: {store_id_short}...) hazır.")
 
 def display_sidebar():
     """Displays all elements in the Streamlit sidebar."""
@@ -279,7 +301,7 @@ def display_sidebar():
     # 1. PDF Upload Section
     handle_pdf_upload()
 
-    # Automatically trigger vector store creation after PDF processing step if needed
+    # Attempt to create vector store for the current ID if needed
     create_vector_store_if_needed()
 
     # 2. Exam Parameters Section
@@ -295,7 +317,9 @@ def display_sidebar():
                                             key="num_q_input")
 
     # Determine if exam generation is possible
-    pdf_ready = st.session_state.get(S_PDF_PROCESSED, False) and st.session_state.get(S_VECTORSTORE_CREATED, False)
+    current_store_id = st.session_state.get(S_CURRENT_STORE_ID)
+    ready_store_id = st.session_state.get(S_VECTORSTORE_READY_FOR_ID)
+    pdf_ready = current_store_id is not None and current_store_id == ready_store_id
     topic_provided = bool(exam_topic)
     can_generate = pdf_ready or topic_provided
 
@@ -306,27 +330,26 @@ def display_sidebar():
     # 4. History Section
     display_history()
 
-
-def handle_exam_generation(pdf_available, topic_only_mode_possible, exam_topic, exam_level, num_questions):
+def handle_exam_generation(pdf_is_ready, topic_provided, exam_topic, exam_level, num_questions):
     """Handles the logic when the 'Generate Exam' button is clicked."""
-    # Re-evaluate conditions strictly inside the handler
-    pdf_ready = st.session_state.get(S_PDF_PROCESSED, False) and st.session_state.get(S_VECTORSTORE_CREATED, False)
-    topic_provided = bool(exam_topic)
+
+    store_id = st.session_state.get(S_CURRENT_STORE_ID) # Get the ID of the currently loaded PDF's store
+    filename = st.session_state.get(S_UPLOADED_FILENAME) # Get the original filename for display
 
     # Determine generation mode
-    if pdf_ready:
+    if pdf_is_ready and store_id:
         actual_topic = exam_topic if exam_topic else DEFAULT_TOPIC_NAME
         generation_mode = "PDF İçeriğinden"
-        source_pdf_display_name = st.session_state.get(S_UPLOADED_FILENAME)
+        source_pdf_display_name = filename # Use original filename for display/saving
     elif topic_provided:
         actual_topic = exam_topic
         generation_mode = "Konu Bazlı"
         source_pdf_display_name = None
+        store_id = None # No specific store ID for topic-only mode
     else:
-        st.error("Sınav oluşturmak için ya PDF yükleyin ya da bir konu girin.") # Should not happen due to button disable logic
+        st.error("Sınav oluşturmak için ya işlenmiş bir PDF seçin ya da bir konu girin.")
         return
 
-    # Clear previous results and flags
     st.session_state[S_EXAM_RESULTS] = None
     st.session_state[S_EXAM_TO_DISPLAY] = None
 
@@ -337,8 +360,9 @@ def handle_exam_generation(pdf_available, topic_only_mode_possible, exam_topic, 
         response_str = ""
 
         with st.spinner("Sorular Gemini API ile üretiliyor... Lütfen bekleyin."):
-            if pdf_ready:
-                retriever = rag_pipeline.get_retriever()
+            if pdf_is_ready and store_id:
+                # Get retriever using the specific store_id for the current PDF
+                retriever = rag_pipeline.get_retriever(store_id=store_id)
                 rag_chain = rag_pipeline.create_rag_chain(retriever, llm)
                 response_str = rag_chain.invoke({
                     "topic": actual_topic,
@@ -355,19 +379,20 @@ def handle_exam_generation(pdf_available, topic_only_mode_possible, exam_topic, 
 
         st.session_state[S_EXAM_RESULTS] = response_str
         st.session_state[S_LAST_GENERATED_TOPIC] = actual_topic
+        # Save original filename in session state for display/db
         st.session_state[S_LAST_SOURCE_PDF] = source_pdf_display_name
 
-        # Attempt to parse and save immediately after generation
         save_exam_results(response_str, actual_topic, num_questions, source_pdf_display_name)
 
     except ValueError as ve:
          st.error(f"Sınav oluşturma hatası: {ve}. API Anahtarınızı kontrol edin.")
     except RuntimeError as re:
-         st.error(f"Sınav oluşturma hatası: {re}. Vektör deposu hazır mı?")
+         # Include store_id in the error message if relevant
+         store_id_msg = f" (ID: {store_id[:8]}...)" if store_id else ""
+         st.error(f"Sınav oluşturma hatası: {re}. Vektör deposu{store_id_msg} hazır mı/yüklenebildi mi?")
     except Exception as e:
-        st.error(f"Sınav oluşturulurken beklenmedik bir hata oluştu: {e}")
+        st.error(f"Sınav oluşturulurken beklenmedik bir hata oluştu: {e}", exc_info=True) # Show traceback for unexpected errors
         st.error("Lütfen API anahtarınızın doğru olduğundan ve varsa PDF dosyasının geçerli olduğundan emin olun.")
-
 
 def save_exam_results(response_str, topic, num_questions, pdf_name):
     """Parses the LLM response and saves the exam to the database."""
