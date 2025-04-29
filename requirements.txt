@@ -1,5 +1,5 @@
 # Web Framework
-streamlit~=1.35.0
+streamlit~=1.37.0
 
 # LangChain Core & Integrations
 langchain~=0.2.1
